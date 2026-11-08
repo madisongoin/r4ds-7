@@ -10,3 +10,136 @@ execute:
 library(tidyverse)
 library(arrow)
 ```
+
+```{r}
+arrow::ParquetFileReader$create("data/daily_prices.parquet")$GetSchema()
+```
+
+```{r}
+arrow::open_dataset("data/daily_prices.parquet") |>
+  dplyr::slice_sample(n = 10) |>
+  dplyr::collect()
+```
+
+
+
+```{r}
+arrow::open_dataset("data/daily_prices.parquet")$schema
+```
+
+```{r}
+arrow::open_dataset("data/daily_prices.parquet") |>
+  filter(date_raw >= "2025-01-01") |>
+  group_by(coin_id) |>
+  summarise(
+    mean_mcap = mean(market_cap_usd, na.rm = TRUE),
+    days = n()
+  ) |>
+  arrange(desc(mean_mcap)) |>
+  collect()
+```
+
+```{r}
+prices <- arrow::read_parquet("data/daily_prices.parquet")
+metadata <- arrow::read_parquet("data/coin_metadata.parquet")
+categories <- arrow::read_parquet("data/categories.parquet")
+
+categories
+```
+
+```{r}
+metadata |>
+  select(coin_id, coin_name, launch_date) |>
+  print(n = Inf)
+```
+
+```{r}
+prices |>
+  filter(coin_id == "btc") |>
+  mutate(date = as.Date(date_raw)) |>
+  ggplot(aes(x = date, y = price_usd)) +
+  geom_line()
+```
+
+
+```{r}
+prices |>
+  left_join(metadata, by = "coin_id")
+```
+
+
+
+```{r}
+prices <- arrow::read_parquet("data/daily_prices.parquet")
+metadata <- arrow::read_parquet("data/coin_metadata.parquet")
+categories <- arrow::read_parquet("data/categories.parquet")
+
+crypto <- prices |>
+  left_join(metadata, by = "coin_id") |>
+  left_join(categories, by = "category_id") |>
+  mutate(date = as.Date(date_raw))
+  #| cache: true
+```
+
+```{r}
+category_shares <- crypto |>
+  group_by(date, category_name) |>
+  summarise(
+    market_cap_usd = sum(market_cap_usd, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  complete(date, category_name, fill = list(market_cap_usd = 0)) |>
+  group_by(date) |>
+  mutate(market_cap_share = market_cap_usd / sum(market_cap_usd)) |>
+  ungroup() |>
+  mutate(
+    category_name = forcats::fct_reorder(
+      category_name,
+      market_cap_share,
+      .fun = median,
+      .desc = TRUE
+    )
+  )
+
+ggplot(category_shares, aes(x = date, y = market_cap_share, fill = category_name)) +
+  annotate(
+    "rect",
+    xmin = as.Date("2022-05-07"), xmax = as.Date("2022-05-13"),
+    ymin = 0, ymax = 1,
+    fill = "grey30", alpha = 0.12
+  ) +
+  annotate(
+    "rect",
+    xmin = as.Date("2022-11-08"), xmax = as.Date("2022-11-12"),
+    ymin = 0, ymax = 1,
+    fill = "grey30", alpha = 0.12
+  ) +
+  geom_area(stat = "identity", position = "stack") +
+  annotate(
+    "label",
+    x = as.Date("2022-05-10"), y = 1.045,
+    label = "Luna/UST crash",
+    size = 3, label.size = 0, fill = "white"
+  ) +
+  annotate(
+    "label",
+    x = as.Date("2022-11-10"), y = 1.045,
+    label = "FTX collapse",
+    size = 3, label.size = 0, fill = "white"
+  ) +
+  scale_fill_viridis_d(option = "viridis", end = 0.9) +
+  scale_y_continuous(
+    labels = scales::label_percent(),
+    breaks = seq(0, 1, by = 0.25),
+    expand = c(0, 0)
+  ) +
+  coord_cartesian(ylim = c(0, 1.1), clip = "off") +
+  labs(
+    title = "Crypto market-cap composition over time",
+    subtitle = "Each band shows a category's share of the total market capitalization represented in the daily dataset.",
+    x = NULL,
+    y = "Share of total market cap",
+    fill = "Category",
+    caption = "Source: daily_prices.parquet; category labels from coin_metadata.parquet and categories.parquet. Shaded dates mark approximate shock windows."
+  )
+```
